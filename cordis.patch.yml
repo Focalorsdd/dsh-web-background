@@ -1,0 +1,10 @@
+# dsh-web-background bundle patch layer.
+#
+# This patch is applied as a profile layer (the package declares
+# `dsh.bundle.patch`). It activates the plugin as a Cordis loader entry via a
+# single `insert`; the entry's package declares `dsh.client` (platform: web),
+# so the client-modules registry scans it and ships lib/client.js to the
+# browser, which paints the GUI background image.
+- insert:
+    - id: web-background
+      name: 'dsh-web-background'
