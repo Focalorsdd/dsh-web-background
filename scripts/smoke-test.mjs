@@ -12,13 +12,16 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 // Resolve React from the dsh install's flat node_modules (the same tree the
-// plugin runs against at runtime).
-const dshRequire = createRequire(
-	"/Users/dongshuo/.local/lib/node_modules/@deepseek-ai/dsh/package.json"
-);
+// plugin runs against at runtime). Override with DSH_PACKAGE_JSON when the
+// global install lives somewhere else.
+const dshPackageJson =
+	process.env.DSH_PACKAGE_JSON ||
+	join(homedir(), ".local/lib/node_modules/@deepseek-ai/dsh/package.json");
+const dshRequire = createRequire(dshPackageJson);
 const React = dshRequire("react");
 const { renderToString } = dshRequire("react-dom/server");
 
@@ -186,6 +189,8 @@ const fakeScope = {
 			themePalette: Array.isArray(hostUser.themePalette) ? hostUser.themePalette : [],
 			themeFont: hostUser.themeFont ?? "",
 			themeCustom: hostUser.themeCustom ?? defaultCustom(),
+			dialogWidth: hostUser.dialogWidth ?? 0,
+			dialogHeight: hostUser.dialogHeight ?? 0,
 		};
 		hostStatus = "ready";
 		for (const fn of scopeListeners) fn();
@@ -201,6 +206,8 @@ const fakeScope = {
 			themePalette: hostUser && Array.isArray(hostUser.themePalette) ? hostUser.themePalette : [],
 			themeFont: (hostUser && hostUser.themeFont) ?? "",
 			themeCustom: hostUser && hostUser.themeCustom ? hostUser.themeCustom : defaultCustom(),
+			dialogWidth: (hostUser && hostUser.dialogWidth) ?? 0,
+			dialogHeight: (hostUser && hostUser.dialogHeight) ?? 0,
 		};
 		for (const fn of scopeListeners) fn();
 		return Promise.resolve();
@@ -274,6 +281,9 @@ if (!injected.store) throw new Error("inject face missing store");
 const store = injected.store;
 let snap = store.getSnapshot();
 if (snap.overlay !== 0.55 || snap.enabled !== true) throw new Error("default state wrong");
+if (snap.dialogWidth !== 0 || snap.dialogHeight !== 0) {
+	throw new Error("default dialog size should be 0/0 (natural modal size)");
+}
 if (snap.themeEnabled !== true || snap.themePalette.length !== 0 || snap.themeFont !== "") {
 	throw new Error("default theme state wrong");
 }
@@ -332,6 +342,13 @@ if (!bgTag || !bgTag.textContent.includes("data:image/jpeg;base64")) {
 // modal closed here)
 if (!source.includes("sectionAutoTheme") || !source.includes("dwb-themeSection")) {
 	throw new Error("background theme editor markup missing from bundle");
+}
+if (!source.includes("dwb-resizeHandle") || !source.includes("dwb-dialog")) {
+	throw new Error("dialog resize handle/class missing from bundle");
+}
+// all-expanded dialog must stay inside the viewport: section bodies scroll
+if (!source.includes("max-height:max(180px, calc(100vh - 300px))!important")) {
+	throw new Error("accordion body overflow guard missing from bundle");
 }
 if (!source.includes("dwb-surfaceList") || !source.includes("sectionCustomTheme")) {
 	throw new Error("custom surface editor markup missing from bundle");
@@ -531,6 +548,18 @@ if (
 	snap.themeCustom.sidebar.alpha !== 0.52
 ) {
 	throw new Error("reset failed: " + JSON.stringify(snap));
+}
+
+// dialog resize: size persists through the store; reset restores natural size
+store.setDialogSize(640, 480);
+snap = store.getSnapshot();
+if (snap.dialogWidth !== 640 || snap.dialogHeight !== 480) {
+	throw new Error("setDialogSize failed: " + JSON.stringify(snap));
+}
+store.setDialogSize(0, 0);
+snap = store.getSnapshot();
+if (snap.dialogWidth !== 0 || snap.dialogHeight !== 0) {
+	throw new Error("dialog size reset to natural failed");
 }
 
 // host-ready path with existing user override must NOT be clobbered by migration
