@@ -4,6 +4,8 @@
 
 只需一张图：插件会把它铺成界面背景（自动加可读性遮罩），同时从图片里提取主色，生成品牌色、界面底色、文字色、边框、按钮、侧边栏、代码块、字体等一系列主题 token——浅色/深色外观分别适配。
 
+当前版本：**0.1.2**
+
 ## 特性
 
 ### 🖼️ 自定义背景
@@ -35,10 +37,17 @@
 - 只调透明度（留空颜色时，对自动色按表面默认透明度等比缩放，层级关系自动保留）
 - 一键「恢复自动」
 
+### 🪟 编辑器体验
+
+- 外观对话框右下角可**拖拽调整大小**，尺寸自动保存；**双击拖拽角恢复自然大小**
+- 三个折叠区全部展开时各自内部滚动，对话框不会超出屏幕
+- 折叠区展开状态在重渲染后保持，不会被弹回
+
 ### 💾 持久化
 
 - 插件向 Host 注册 `dsh-web-background` 设置命名空间，持久化到用户设置文档
 - 浏览器端同时镜像到 localStorage，Host 命名空间可用后自动迁移，无缝切换
+- 背景、主题、逐项覆盖以及**对话框尺寸**都会持久化
 - 「恢复默认」会同时清除 Host 设置和本地缓存
 
 ## 快速开始
@@ -67,6 +76,7 @@ dsh plugin --profile web add ./dsh-web-background
 3. 「背景」区：粘贴 URL / 选择本地图片 / 调遮罩 / 启停 / 恢复默认
 4. 「自动主题」区：跟随背景生成、单独选主题图、从当前背景重新生成、清除主题
 5. 「逐项自定义」区：按需覆盖单个表面的颜色和透明度
+6. 拖拽对话框右下角可调整大小；双击拖拽角恢复默认尺寸
 
 ## 自动主题怎么工作
 
@@ -88,10 +98,17 @@ dsh plugin --profile web add ./dsh-web-background
 
 ```bash
 # 重新生成 lib/client.js（默认背景图替换后也需要执行）
-node scripts/build-client.mjs
+npm run build
 
 # 离线冒烟测试（无需浏览器）
-node scripts/smoke-test.mjs
+npm test
+```
+
+也可以直接调用脚本（冒烟测试支持 `DSH_PACKAGE_JSON` 指定 DSH 安装位置）：
+
+```bash
+node scripts/build-client.mjs
+DSH_PACKAGE_JSON=/path/to/@deepseek-ai/dsh/package.json node scripts/smoke-test.mjs
 ```
 
 ## 文件结构
@@ -117,6 +134,9 @@ node scripts/smoke-test.mjs
 
 **DSH 升级后背景消失了？**
 应用自身不透明层的类名是前端构建生成的哈希名，升级后可能变化。排查方法见 `docs/MAINTENANCE.md`。
+
+**外观对话框尺寸不合适？**
+拖拽右下角调整到合适大小，尺寸会自动保存；双击拖拽角即可恢复默认尺寸。
 
 ## License
 
