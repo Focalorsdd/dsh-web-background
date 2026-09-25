@@ -1,6 +1,6 @@
 {
   "name": "dsh-web-background",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "DeepSeek Harness Web GUI custom background: injects a background image/via client CSS so text stays readable.",
   "type": "module",
   "main": "lib/index.js",
@@ -26,11 +26,17 @@
     },
     "client": {
       "platform": "web",
-      "immediately": true
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-theme"
+      ]
     }
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.1"
+    "@deepseek-ai/schemastery": "^3.18.4"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"

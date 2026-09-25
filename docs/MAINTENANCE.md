@@ -21,13 +21,16 @@ rsync -a --delete ./ ~/.local/lib/node_modules/@deepseek-ai/dsh/node_modules/dsh
 > macOS 下若 shell 对 `~/.dsh` 报 `Operation not permitted`（TCC 保护），rsync 会失败；
 > 改用 DSH 注入器的 `dev_stage_add` 挂一个临时工具，在 DSH 进程内用
 > `process.getBuiltinModule('node:fs')` 复制 `lib/index.js`、`lib/client.js` 等文件，
-> 然后 `dev_reload_package dsh-web-background` 热重载（改 lib/index.js 后仍需完整重启 dsh web 才能让浏览器 settingsScope 看到新 schema）。
+> 然后 `dev_reload_package dsh-web-background` 热重载（改 lib/index.js 的 Config schema 后仍需完整重启，
+> 浏览器 configForms 镜像才能看到新字段）。
 
 ## 文件结构与构建
 
-- `lib/index.js` — Node 半部分：向 Host 注册 `dsh-web-background` 设置命名空间
-  （schema: `image`/`overlay`/`enabled`/`themeEnabled`/`themePalette`/`themeFont`）。
-  **改它必须重启 `dsh web`**（仅热重载 Host fiber 时，浏览器 settingsScope 可能仍看不到新命名空间）。
+- `lib/index.js` — Node 半部分（DSH ≥ 0.1.7）：导出 volatile `Config`（`image`/`overlay`/`enabled`/
+  `themeEnabled`/`themePalette`/`themeFont`/`themeCustom`/弹窗尺寸），Host 设置服务据此把字段投到
+  浏览器 `configForms` 镜像，并把用户修改持久化进 profile 的 `cordis.patch.yml`；`apply` 只调
+  `settings.configure({ auto: false })` 关掉自动设置页。
+  **改 schema 必须重启**（configForms 镜像按 entry 重建）。
 - `lib/client.template.js` — 浏览器半部分的可读源码（设置行 UI + 背景注入 CSS + 调色板
   提取/主题 token 投影，约 392 行主题逻辑集中在 `paintBackground()` 之后的 Auto theme 区块）。
 - `assets/default-photo.b64` — 默认背景图的 base64（678K JPEG）。
@@ -41,22 +44,30 @@ node scripts/smoke-test.mjs   # 离线冒烟测试（无需浏览器）
 换默认背景图：替换 `assets/default-photo.b64` 后重新构建。
 （dsh 的 `/plugins/<id>/` 路由只下发 `client.js`，不能引用外部文件；`file://` 被浏览器拦截，图片必须内联。）
 
-## 加载链路（三个必要条件，缺一不可）
+## 加载链路（DSH ≥ 0.1.7，条件缺一不可）
 
-1. **Node 半部分** `lib/index.js`：cordis 插件必须是「函数」或「带 `apply` 方法的对象」。
+1. **Node 半部分** `lib/index.js`：cordis 插件必须是「函数」或「带 `apply` 方法的对象」；
+   设置字段走 volatile `Config` 导出（不再有 `settings.register`）。
 2. **浏览器半部分** `lib/client.js`：factory 返回值必须 `exports.apply = apply; return module.exports;`
    （返回空对象会报 `invalid plugin, expect function or object with an "apply" method`）。
 3. **package.json 的 `dsh.client` 必须有 `"immediately": true`**，否则浏览器只登记不加载。
-   package.json 元数据有缓存，改它**必须重启 `dsh web`**；`lib/client.js` 内容改动由 HMR
+   package.json 元数据有缓存，改它**必须重启**；`lib/client.js` 内容改动由 HMR
    轮询（500ms）自动推送，不用重启。
+4. **服务依赖必须指向存在的服务**：bundle 导出的 `inject`（服务名：
+   `slots`/`locale`/`configForms`/`theme`）+ `dsh.client.inject`（包名，仅排序激活）。
+   0.1.7 删掉了 `settingsScope` 服务，谁等它谁永远 pending——桌面端 web boot 会把
+   「entry 未激活」当致命错误（`web boot: 1 entry did not activate`），整个 GUI 起不来。
 
-## 设置持久化（两段式，都无需额外操作）
+## 设置持久化（DSH ≥ 0.1.7，两段式）
 
-- 浏览器端把 `image`/`overlay`/`enabled` 写入 localStorage（`dsh-web-background:v1`），
-  并同步写入 Host 设置命名空间（重启 dsh 后命名空间由 Node 半部分注册）。
-- Node 半部分生效后（即重启后）首次读到 Host 视图时，若 Host 无用户覆盖而 localStorage 有值，
-  自动把 localStorage 值迁移进 Host 设置文档；之后以 Host 为准。
+- 浏览器端 `ctx.configForms.get("dsh-web-background")`（entry id 见 cordis.patch.yml）拿到
+  共享表单：`getSnapshot()` → `{status,value,base,user,revision,writable,mode}`，
+  `set`/`unset`/`mutate` 写回；Host 端 `dsh-settings` 把 volatile 字段的用户覆盖持久化到
+  profile 的 `cordis.patch.yml`（`- id: dsh-web-background config: ...`）。
+- localStorage（`dsh-web-background:v1`）继续作镜像与兜底：Host 无用户覆盖而 localStorage
+  有值时自动迁移进 Host；之后以 Host 为准。
 - 「恢复默认」会同时清掉 localStorage 和 Host 字段。
+- 0.1.6 及更早版本请用插件 v0.1.2（旧 `settingsScope` API）。
 
 ## 自动主题（图片 → GUI 主题）
 
@@ -98,14 +109,24 @@ node scripts/smoke-test.mjs   # 离线冒烟测试（无需浏览器）
 
 ## 遮挡层（dsh 升级后背景消失的排查点）
 
-应用自身有不透明全屏层会盖住 body 背景，当前在 `lib/client.template.js` 的 `buildCss()` 里已置透明：
+应用自身有不透明全屏层会盖住 body 背景，当前在 `lib/client.template.js` 的 `buildCss()` 里已置透明。
+选择器按前端构建「代」并排保留：不再匹配的那一代只是空转 CSS，不影响另一代，因此一次 App 升级不会立刻打断另一侧。
 
-| 层 | 类名 | 处理 |
-|---|---|---|
-| 应用框架 | `.pI_x6G_frame` | transparent |
-| 会话区 | `.wSkVaW_root` | transparent |
-| 侧栏栏位 | `.pI_x6G_sidebarCol` | transparent |
-| 侧栏 | `.hHd-Xa_root` | `rgba(10,14,28,0.6)` 深色遮罩保可读性 |
+| 层 | ≤0.1.6 构建 | 0.1.7-rc 构建 | 处理 |
+|---|---|---|---|
+| 应用框架 | `.pI_x6G_frame` | `.P9Gu9a_frame` | transparent |
+| 中央内容列 | —（旧版无此层） | `.P9Gu9a_centerCol` | transparent |
+| 右侧面板列 | —（旧版无此层） | `.P9Gu9a_rightbarCol` | transparent |
+| 会话区 | `.wSkVaW_root` | `._5AcOhq_root` | transparent |
+| 侧栏栏位 | `.pI_x6G_sidebarCol` | `.P9Gu9a_sidebarCol` | transparent |
+| 侧栏 | `.hHd-Xa_root` | `.pjj1TG_root` | `rgba(10,14,28,0.6)` 深色遮罩保可读性 |
+
+各代的来源插件：ui-layout 提供 `_frame` / `_centerCol` / `_rightbarCol` / `_sidebarCol`，
+ui-conversation 提供那个持 `--dsw-alias-bg-base` 的 `_root`，ui-sidebar 提供侧栏 `_root`。
+⚠️ 0.1.7 起 ui-layout 把 `bg-base` 拆到了**三个**元素上（frame + centerCol + rightbarCol，
+后两个带桌面窗口圆角样式）——只透 frame 不够，主区域会被 centerCol 盖住（踩过，见时间线 9）。
+核对方法：对 asar 里 `dsh-client-ui-layout/lib/client.js` 搜 `background:var(--dsw-alias-bg-base)`，
+每个命中的类都要进透明列表。
 
 **这些类名是 dsh-web-frontend 构建时生成的哈希名，dsh 升级后会变。** 升级后若背景消失，重新探测类名：
 
@@ -126,12 +147,12 @@ while (el && el !== document.documentElement) {
 }
 ```
 
-把新类名替换进 `buildCss()` 对应规则即可。
+把新类名加进 `buildCss()` 对应规则即可（保留旧一代作跨版本兼容）。
 
 ## 可调参数（lib/client.template.js）
 
 - `DEFAULT_OVERLAY`（0.55）：默认遮罩不透明度；运行时可在设置框里调（0–95%）。
-- `.hHd-Xa_root` 规则里的 `0.6`：侧栏遮罩明暗。
+- 侧栏 `_root` 规则里的 `0.6`：侧栏遮罩明暗。
 - 设置行插槽：`settings.general.item`，`id: "background"`，`order: -23`
   （Agent 预设 -25 之下、权限 -20 之上）。
 
@@ -143,3 +164,40 @@ while (el && el !== document.documentElement) {
 4. 残留 `dsh web` 进程占用 3080 端口（EADDRINUSE）；先 `lsof -nP -iTCP:3080 -sTCP:LISTEN` 查 PID。
 5. 新增设置行时，Host 命名空间未注册（未重启）→ 设置作用域 `unavailable`；
    已用 localStorage 兜底 + 自动迁移解决，重启后自动切换到 Host 持久化。
+6. App 升到 0.1.7-rc.2 后哈希前缀换代（`pI_x6G`/`wSkVaW`/`hHd-Xa` → `P9Gu9a`/`_5AcOhq`/`pjj1TG`），
+   旧选择器全部失配 → 设置项在、主题能生成，但主对话区仍是不透明 `--dsw-alias-bg-base`，背景被挡住。
+   修复：两代选择器并排保留（空转 CSS 无副作用），并已用 `app.asar` 内
+   `dsh-client-ui-{layout,conversation,sidebar}/lib/client.js` 的 CSS 串核对来源。
+7. **0.1.7 删除 `settingsScope` 服务** → 桌面端 web boot 报
+   `1 entry did not activate / pending (waiting for service: settingsScope)`，整个 GUI 起不来
+   （崩溃日志在 `~/Library/Logs/Deep Seek Harness/crash-*-web-boot.log`）。
+   迁移（v0.1.3）：设置体系改为「entry volatile Config」——Node 半部分导出带 `.volatile()` 的
+   schemastery `Config`（需 schemastery ≥3.18.4 + cosmokit ≥1.8.5，直接从 app.asar 提取同版本）；
+   浏览器半部分 `ctx.configForms.get(<entry id>)`（接口形状与旧 scope 相同，无缝替换）；
+   entry id 统一为 `dsh-web-background`（= 包名 = 旧命名空间）；`dsh.client.inject` 按官方
+   `cordis-plugin-development` skill 补上 4 个客户端包排序。
+   注：官方要求第三方插件**不要** `require('@deepseek-ai/dsh-client-ui-primitives')`
+   （应拷贝所需控件进插件）；当前静态模块表仍提供它（Modal/Button/Input 均在），暂未改，
+   属已知脆弱点。
+8. **崩溃自愈会把插件从 bundles 里摘掉**：web boot 连续崩溃两次后，App 自动把插件从
+   profile `package.json` 的 `dsh.profile.bundles` 列表移除（依赖保留），之后能正常开机但
+   插件不加载——"修好了重启却没效果"多半是这个。**修好代码后必须重新
+   `dsh plugin --profile <name> add <dir>`**（reconcile 会把 bundle 加回列表），光重启没用。
+9. **只透 frame 不够：0.1.7 的 ui-layout 有三个不透明层**。症状：主题紫色生效、图片已持久化
+   （patch.yml 里有完整 config），但背景图不可见——`.P9Gu9a_centerCol`（中央内容列，带桌面
+   圆角样式）和 `.P9Gu9a_rightbarCol` 也持 `bg-base`，漏透就整片盖住。排查法：主题色在而图不在
+   = 取色/持久化/主题管道全通，问题只剩 CSS 层；对 asar 全量审 `background:var(--dsw-alias-bg-base)`
+   命中（shell / ui-layout / ui-conversation / ui-sidebar）。修复即热更（client-hmr 在
+   dsh-web-app 里，500ms 推送 client.js），不用重启。
+10. **桌面端专属坑：macOS 半透明窗口规则打掉 html/body 背景**。frontend.css 有
+    `html[data-platform=darwin], html[data-platform=darwin] body{background:transparent}`
+    （桌面毛玻璃窗口用），属性选择器优先级 (0,1,1) 碾压我们的元素选择器 (0,0,1)——
+    浏览器端没有 data-platform 属性所以一直正常，桌面端 html/body 背景声明静默失效。
+    修复：html/body 背景声明**必须带 `!important`**（buildCss 已加）。
+    诊断手法（可复用）：无 DevTools 时给插件加一个一次性探针，把
+    getComputedStyle/selector 匹配数/Image 加载测试 JSON 化后 `scope.set("themeFont", json)`
+    写进 profile patch 回读；注意 store 快照会做 normalizeFontId 归一化，清理时要读
+    `scope.getSnapshot().user/value` 的**原始值**；清理定时器要重试（apply 后表单可能还在
+    loading，一次性 setTimeout 会错过）。另：`--headless=new` 在本机沙箱里起不来，Chrome
+    自测用 `--headless=old --no-sandbox --disable-crashpad --user-data-dir=/tmp/...`，
+    且 macOS 没有 `timeout` 命令。

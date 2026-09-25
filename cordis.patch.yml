@@ -5,6 +5,10 @@
 # single `insert`; the entry's package declares `dsh.client` (platform: web),
 # so the client-modules registry scans it and ships lib/client.js to the
 # browser, which paints the GUI background image.
+#
+# The entry id doubles as the Host settings namespace (DSH ≥ 0.1.7): the
+# settings mirror serves this entry's volatile Config to the browser half as
+# `ctx.configForms.get("dsh-web-background")`.
 - insert:
-    - id: web-background
+    - id: dsh-web-background
       name: 'dsh-web-background'

@@ -239,8 +239,10 @@ const fakeTheme = {
 };
 const fakeCtx = {
 	theme: fakeTheme,
-	settingsScope: { bind(spec) {
-		if (spec.namespace !== "dsh-web-background") throw new Error("wrong namespace");
+	// DSH ≥ 0.1.7 settings service: configForms.get(entryId) returns a form with
+	// the same getSnapshot/subscribe/set/unset shape as the retired settingsScope.
+	configForms: { get(entryId) {
+		if (entryId !== "dsh-web-background") throw new Error("wrong settings entry id: " + entryId);
 		return fakeScope;
 	} },
 	effect(cb) {
@@ -267,6 +269,13 @@ const fakeCtx = {
 };
 
 // ── Drive apply ─────────────────────────────────────────────────────────
+// The service inject list must target live DSH ≥ 0.1.7 services: the removed
+// settingsScope service held the web boot pending forever on desktop.
+if (!Array.isArray(plugin.inject)) throw new Error("client inject list missing");
+if (plugin.inject.includes("settingsScope")) throw new Error("inject still targets the removed settingsScope service");
+for (const svc of ["slots", "locale", "configForms", "theme"]) {
+	if (!plugin.inject.includes(svc)) throw new Error("inject missing live service: " + svc);
+}
 plugin.apply(fakeCtx);
 if (registered.length !== 1) throw new Error("expected one combined appearance registration, got " + registered.length);
 const reg = registered[0];
@@ -566,6 +575,39 @@ if (snap.dialogWidth !== 0 || snap.dialogHeight !== 0) {
 store.setImage("https://example.com/keep.jpg");
 const migrated = store.getSnapshot();
 if (migrated.image !== "https://example.com/keep.jpg") throw new Error("host write lost");
+
+// ── Node half (DSH ≥ 0.1.7): volatile Config drives the settings mirror ──
+const nodeHalf = await import(join(root, "lib", "index.js"));
+if (typeof nodeHalf.apply !== "function") throw new Error("node half has no apply");
+if (!nodeHalf.Config || typeof nodeHalf.Config.toJSON !== "function") {
+	throw new Error("node half must export a schemastery Config");
+}
+const configDict = nodeHalf.Config.dict ?? {};
+const EXPECTED_FIELDS = ["image", "overlay", "enabled", "themeEnabled", "themePalette", "themeFont", "themeCustom", "dialogWidth", "dialogHeight"];
+for (const field of EXPECTED_FIELDS) {
+	const schema = configDict[field];
+	if (!schema) throw new Error("Config missing field: " + field);
+	if (schema.meta?.volatile !== true) throw new Error("Config field is not volatile: " + field);
+}
+// apply must only register the no-auto-page presentation policy
+{
+	const calls = [];
+	const childCtx = {
+		effect(cb) { return cb(); },
+		settings: { configure(policy, owner) { calls.push({ policy, owner }); return () => {}; } },
+	};
+	const fakeFiber = { id: "fiber-1" };
+	nodeHalf.apply({
+		inject(services, cb) {
+			if (JSON.stringify(services) !== JSON.stringify(["settings"])) throw new Error("node half injects wrong services: " + services);
+			return cb(childCtx);
+		},
+		fiber: fakeFiber,
+	});
+	if (calls.length !== 1) throw new Error("expected one settings.configure call, got " + calls.length);
+	if (calls[0].policy.auto !== false) throw new Error("auto settings page should be disabled");
+	if (calls[0].owner !== fakeFiber) throw new Error("presentation policy must be owned by the plugin fiber");
+}
 
 console.log("smoke test passed");
 console.log("row html length:", html.length);
