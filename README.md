@@ -30,8 +30,9 @@ v0.2.0 起，这些效果收进一个独立的「**自定义**」外观：设置
 ### 🌗 独立「自定义」外观
 
 - 外观行注入第四个方块「自定义」，点击即进入：背景图 + 图片主题一起生效
-- 选择浅色 / 深色 / 跟随系统任意一项即退出，界面回到完全的默认外观（背景不动、主题不染）
+- 选择浅色 / 深色 / 跟随系统任意一项即退出，界面回到完全的默认外观（背景不动、主题不染），并恢复进入前的选择
 - 实现上「自定义」= 持久化的内置 `dark` 偏好 + scheme 锁定的 overrideTokens 图层（token 的 light/dark 两端同值）：ui-theme 每次设置同步只会采纳持久化偏好（schema 仅认 light/dark/system），持久化 dark 让它永远踩不到自定义模式，也就不会有周期性的浅色闪烁
+- 自定义激活期间只有「自定义」方块高亮（深色方块的选中样式会被抑制）；另有 1 秒看门狗兜底：设置服务慢启动、偏好被外部改动等异常时自动把外观拉回来
 - 对话框里也保留了「作为『自定义』外观启用」开关，功能相同
 
 ### 🧩 逐项自定义
@@ -56,8 +57,8 @@ v0.2.0 起，这些效果收进一个独立的「**自定义**」外观：设置
 
 - 插件的偏好就是它的 volatile `Config`（DSH ≥ 0.1.7）：Host 设置服务把用户修改持久化到
   profile 的 `cordis.patch.yml`（`- id: dsh-web-background config: ...`）
-- 浏览器端同时镜像到 localStorage，Host 设置可用后自动迁移，无缝切换
-- 背景、主题、逐项覆盖以及**对话框尺寸**都会持久化
+- 浏览器端同时镜像到 localStorage；Host 设置就绪后以 Host 的**用户记录**为准（schema 默认值不会覆盖本地已保存的值），新增字段会自动前向迁移进 Host
+- 背景、主题、逐项覆盖、**对话框尺寸**与「自定义」开关状态都会持久化，重启后自动恢复
 - 「恢复默认」会同时清除 Host 设置和本地缓存
 
 ## 快速开始
@@ -67,6 +68,10 @@ v0.2.0 起，这些效果收进一个独立的「**自定义**」外观：设置
 推荐直接通过 GitHub 仓库装配：
 
 ```powershell
+# 桌面 App（profile 名为 desktop）
+dsh plugin --profile desktop add github:Focalorsdd/dsh-web-background
+
+# 或 dsh web 的浏览器端
 dsh plugin --profile web add github:Focalorsdd/dsh-web-background
 ```
 
@@ -74,21 +79,21 @@ dsh plugin --profile web add github:Focalorsdd/dsh-web-background
 
 ```powershell
 git clone https://github.com/Focalorsdd/dsh-web-background
-dsh plugin --profile web add ./dsh-web-background
+dsh plugin --profile desktop add ./dsh-web-background
 ```
 
-装配完成后**重启 `dsh web`**（首次需要注册 Host 设置命名空间）。之后的 `lib/client.js` 改动会被 HMR 自动推送，无需反复重启。
+装配完成后**重启 App / `dsh web`**（首次需要注册 Host 设置命名空间）。之后的 `lib/client.js` 改动会被 HMR 自动推送，无需反复重启。
 
 ### 使用
 
-1. 打开 DSH Web 界面 → 设置 → General
+1. 打开设置 → General
 2. 在外观行点第四个方块「**自定义**」（或在「自定义外观」对话框里打开「作为『自定义』外观启用」）
 3. 在 Agent 预设下方找到「**自定义外观**」卡片，点击打开编辑器
 4. 「背景」区：粘贴 URL / 选择本地图片 / 调遮罩 / 启停 / 恢复默认
 5. 「自动主题」区：跟随背景生成、单独选主题图、从当前背景重新生成、清除主题
 6. 「逐项自定义」区：按需覆盖单个表面的颜色和透明度
 7. 拖拽对话框右下角可调整大小；双击拖拽角恢复默认尺寸
-8. 想回到默认外观：外观行选浅色 / 深色 / 跟随系统即可（插件自动退出，设置都保留）
+8. 想回到默认外观：外观行选浅色 / 深色 / 跟随系统即可（插件自动退出并恢复你之前的选择，插件自身的图片、配色等设置都保留）
 
 ## 自动主题怎么工作
 
@@ -142,11 +147,14 @@ DSH_PACKAGE_JSON=/path/to/@deepseek-ai/dsh/package.json node scripts/smoke-test.
 **升级到 v0.2 后背景不见了？**
 v0.2 把背景/主题收进了独立的「自定义」外观（不再寄生在深色模式）。到 设置 → General → 外观 点第四个方块「自定义」即可恢复；之前的图片、配色、遮罩设置都还在。
 
+**「自定义」激活时，外观行的深色方块为什么不亮？系统外观偏好也变成了深色？**
+两者都是设计使然：「自定义」的基底就是持久化的深色偏好（合法的内置值，系统每次设置同步采纳的正是它，从根上消除了周期性闪白），插件会抑制深色方块的选中样式、只高亮「自定义」方块。退出自定义（点浅色/深色/跟随系统，或再点一次「自定义」）时自动恢复你进入前的选择。
+
 **图片显示出来了，但自动主题提示跨域失败？**
 外部图片 URL 没有 CORS 头时浏览器无法读取 Canvas 像素。背景不受影响；如需自动主题，请选择本地图片。
 
 **换了图片但界面没变化？**
-`lib/client.js` 会热更新；如果是首次安装、改过 `package.json`，或 Host 设置命名空间还没出现，请重启 `dsh web`。
+`lib/client.js` 会热更新；如果是首次安装、改过 `package.json`，或 Host 设置命名空间还没出现，请重启 App / `dsh web`。
 
 **DSH 升级后背景消失了？**
 应用自身不透明层的类名是前端构建生成的哈希名，升级后可能变化；外观行的「自定义」方块同理（找不到行时方块不出现，但对话框里的开关仍可用）。排查方法见 `docs/MAINTENANCE.md`。
