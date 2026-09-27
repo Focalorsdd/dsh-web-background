@@ -5,20 +5,29 @@
 > 2026-08-15 起：设置面板（General 区块、Agent 预设下方）新增「自定义背景」框，
 > 点击后弹出定制对话框：可粘贴图片 URL、选择本地图片、调节遮罩不透明度、停用/启用、恢复默认；
 > 对话框底部新增「自动主题」区：自动跟随背景图生成、单独选择主题图片、从当前背景图生成、清除主题。
+> v0.2.0 起：背景 + 主题收进独立的「自定义」外观（外观行第四个方块，注册进主题服务的
+> 真实主题，colorScheme dark）；浅色/深色/跟随系统 = 完全默认外观。详见「自动主题」章。
 
-## 插件位置（两个副本，改动后必须同步）
+## 插件位置
 
-- profile 副本：`~/.dsh/profiles/web/node_modules/dsh-web-background/`
+- profile 副本：`~/.dsh/profiles/web/node_modules/dsh-web-background/` —— **是指向源码目录
+  （`~/Documents/deepseek/dsh-web-background`）的符号链接**，源码改动直接生效，无需同步。
+  ⚠️ 也因此**绝不能**在这个路径下做 `rm -rf` / `rsync --delete` 类操作——操作的就是源码树
+  本身（2026-09 踩过：在「部署目录」里清理误删了源码树的 node_modules 和几个未跟踪的
+  旁挂目录）。
 - 全局副本：`~/.local/lib/node_modules/@deepseek-ai/dsh/node_modules/dsh-web-background/`
+  （真实目录，npm 全局安装时复制；macOS TCC 保护，沙箱 shell 写入会 `Operation not permitted`）。
 
-同步命令（从源码目录 `~/Documents/deepseek/dsh-web-background` 执行）：
+全局副本同步命令（从源码目录执行；**用白名单清单同步**，源码树里的 `dsh-routing-suite/`、
+`dsh-super-injector-*/`、`.git`、`node_modules` 等不属于插件，`rsync -a --delete ./` 全量
+同步会把它们灌进部署副本）：
 
 ```bash
-rsync -a --delete ./ ~/.dsh/profiles/web/node_modules/dsh-web-background/
-rsync -a --delete ./ ~/.local/lib/node_modules/@deepseek-ai/dsh/node_modules/dsh-web-background/
+rsync -a --delete lib assets docs scripts LICENSE README.md package.json cordis.patch.yml \
+  ~/.local/lib/node_modules/@deepseek-ai/dsh/node_modules/dsh-web-background/
 ```
 
-> macOS 下若 shell 对 `~/.dsh` 报 `Operation not permitted`（TCC 保护），rsync 会失败；
+> macOS 下 shell 对 `~/.local/lib/node_modules` 的写入会报 `Operation not permitted`（TCC 保护）；
 > 改用 DSH 注入器的 `dev_stage_add` 挂一个临时工具，在 DSH 进程内用
 > `process.getBuiltinModule('node:fs')` 复制 `lib/index.js`、`lib/client.js` 等文件，
 > 然后 `dev_reload_package dsh-web-background` 热重载（改 lib/index.js 的 Config schema 后仍需完整重启，
@@ -27,10 +36,11 @@ rsync -a --delete ./ ~/.local/lib/node_modules/@deepseek-ai/dsh/node_modules/dsh
 ## 文件结构与构建
 
 - `lib/index.js` — Node 半部分（DSH ≥ 0.1.7）：导出 volatile `Config`（`image`/`overlay`/`enabled`/
-  `themeEnabled`/`themePalette`/`themeFont`/`themeCustom`/弹窗尺寸），Host 设置服务据此把字段投到
+  `customActive`/`themeEnabled`/`themePalette`/`themeFont`/`themeCustom`/弹窗尺寸），Host 设置服务据此把字段投到
   浏览器 `configForms` 镜像，并把用户修改持久化进 profile 的 `cordis.patch.yml`；`apply` 只调
   `settings.configure({ auto: false })` 关掉自动设置页。
-  **改 schema 必须重启**（configForms 镜像按 entry 重建）。
+  **改 schema 必须重启**（configForms 镜像按 entry 重建）。v0.2.0 新增 `customActive`，
+  升级后需要一次完整重启才能在 Host 设置里持久化该字段（重启前由 localStorage 镜像兜底）。
 - `lib/client.template.js` — 浏览器半部分的可读源码（设置行 UI + 背景注入 CSS + 调色板
   提取/主题 token 投影，约 392 行主题逻辑集中在 `paintBackground()` 之后的 Auto theme 区块）。
 - `assets/default-photo.b64` — 默认背景图的 base64（678K JPEG）。
@@ -43,6 +53,20 @@ node scripts/smoke-test.mjs   # 离线冒烟测试（无需浏览器）
 
 换默认背景图：替换 `assets/default-photo.b64` 后重新构建。
 （dsh 的 `/plugins/<id>/` 路由只下发 `client.js`，不能引用外部文件；`file://` 被浏览器拦截，图片必须内联。）
+
+## 设置持久化（Host 设置 + localStorage 镜像）
+
+- 读：Host 镜像 ready 时以其为准，**但只认 `snap.user` 里显式存在的字段**（用户级写入记录）；
+  仅在 `snap.value` 里出现的字段可能只是 schema 默认值——新增的 Config 字段在重启前的写入
+  会被 Host 拒收，重启后 value 有默认值而 user 没有记录，若按 value 归一化，第一次设置回显
+  就会把 localStorage 里的值打回默认（v0.2.0 的「启动后从暗色跳浅色」就是这么来的：
+  customActive 重启前只进了 localStorage，重启后 value=false 盖掉了它）。user 无记录的字段
+  一律回退 localStorage 镜像。
+- 写：`tryMigrate` 除一次性整体迁移外，还会**逐字段前向迁移**——user 无记录且本地值与 Host
+  值不同的字段写进 Host（`forwardWrite`）。写入尝试按字段记录（`forwardAttempts`）防止
+  写/回显循环；被拒的尝试会撤销标记以便重启后重试。⚠️ 拒绝回调必须写在独立函数里：
+  循环内联的 `var` 闭包共享变量，回调触发时 field 已是循环末值，标记永远清不掉（踩过）。
+- `scope.set/unset` 全部包同步 try/catch + promise catch：旧 schema 会以未知字段拒绝写入。
 
 ## 加载链路（DSH ≥ 0.1.7，条件缺一不可）
 
@@ -76,10 +100,49 @@ node scripts/smoke-test.mjs   # 离线冒烟测试（无需浏览器）
   差异越大，主体权重越高；再按权重 × 饱和度选主体色并固定放到 `palette[0]`。
   高光/brand/交互 hover 一律从 `palette[0]` 取色，只按深浅外观调整明度、保留主体
   色相与饱和度（低饱和图回退到 `DEFAULT_THEME_HUE`）。
-- 通过官方主题服务投影 token：插件声明 `inject: [..., "theme"]`，在 effect 中调用
-  `ctx.theme.overrideTokens("auto-theme", buildThemeTokens(profile, next.themeCustom))`；
-  `dsh-client-ui-layout` 的 ThemePresenter 会把 token 写到 `document.body`，并随浅色/深色
-  外观自动取 `light`/`dark` 值。
+- 通过官方主题服务以 **overrideTokens 图层**叠加（v0.2.0 定型；此前曾用 `ctx.theme.register`
+  注册独立主题，后因 ui-theme 的 adopt() 机制放弃，见下）：插件声明 `inject: [..., "theme"]`，
+  自定义模式下调用 `ctx.theme.overrideTokens("auto-theme",
+  schemeLockedTokens(buildThemeTokens(profile, next.themeCustom)))`——`schemeLockedTokens`
+  把每个 token 的 `{light, dark}` 两端都锁成 dark 值，使图层与 scheme 无关（退出自定义的
+  那一帧即使 scheme 已翻浅色也不会露浅色面）。该图层只在自定义模式叠放，**默认深浅外观
+  完全不受影响**（修掉了 v0.1.x「只有深色下生效、且污染深色」的问题）。旧版主题服务没有
+  `setTheme`/`getTheme` 时自动降级回 v0.1.3 的常驻叠层行为。
+  `dsh-client-ui-layout` 的 ThemePresenter 把各图层合成后的 token 写到 body 内联样式，
+  并按 `active.colorScheme` 切 `body[data-ds-dark-theme]`。
+- **为什么不再 register 独立主题（v0.2.0 的根治教训）**：ui-theme 的 `adopt()` 在**每一次
+  设置同步**（桌面端约 19s 一次）都把外观偏好重置为 Host 持久化值，而其 schema 只认
+  light/dark/system——注册进主题服务的自定义 id 无法持久化，于是每 19s 被踩回一次，踩与
+  插件拉回之间总有一帧浅色闪烁（用户三连截图里的白色代码块）。改用「持久化合法内置值
+  `dark` + overrideTokens 图层」后，`adopt()` 读到的持久化偏好恒等于当前偏好，**永久
+  no-op**，翻转消失（信标实测 72s+ 零 theme/change）。
+- **「自定义」外观模式（v0.2.0）**：外观行（ui-theme 的 AppearanceRow，三个硬编码
+  方块 浅色/深色/跟随系统，选中态跟随 `preference`）被 DOM 注入第四个方块「自定义」。
+  实现要点（client.template.js「custom appearance cube」区块）：
+  - 行定位：哈希类名探针 `APPEARANCE_CUBE_PROBES = ["TDnZ3a"]`（0.1.7-rc 构建；
+    选择器形如 `[class*='TDnZ3a_cubeRow']`）+ 结构化兜底（恰好 3 个 aria-pressed
+    按钮的容器）。都找不到且页面上存在 aria-pressed 按钮组时 warn 一次（设置页未
+    打开时不报）。
+  - 方块样式在运行时从 shell 自己的方块抄：base class 抄未选中方块；选中态 class 是
+    「pressed 方块 − 未 pressed 方块」的 classList 差集，缓存进 localStorage
+    （`dsh-web-background:cube`），保证启动即自定义模式（此时没有 pressed 方块可观测）
+    也有选中样式；实在没有就用 boxShadow 兜底。
+  - 图标走 `require("react-dom/client")` 挂载 `IconSparkleMedium`（primitives）；
+    require 失败退化为纯文字方块。
+  - React 只就地更新三个已知方块的 props，不会动追加的第四个子节点；MutationObserver
+    （childList subtree，microtask 合帧）在设置页重挂载后自愈重插。
+  - **进出语义**：进入「自定义」→ 记住当前内置偏好（`prevBuiltInPreference`）→
+    `store.setCustomActive(true)` → store 订阅者叠图层 + `setTheme("dark")`（**合法
+    schema 值，写进 Host 持久化**）。点 shell 的浅色/深色/跟随系统方块 → 捕获期 click
+    监听**立即** `setCustomActive(false)`（不依赖随后的 theme/change，因此重复点击
+    已选中的深色方块——不会 publish——也能正确退出到原生深色）。再点一次「自定义」或
+    关掉对话框开关 → `leaveCustomMode()`：退出并回切 `prevBuiltInPreference`。
+    非点击的偏好变动（Host 设置 adoption / 跨窗口同步）由 `theme/change`（cordis 事件
+    挂在共享 events 服务上，任何 ctx.on 都能收到）与 1s 看门狗重新断言回 "dark"。
+  - **深色方块的选中态抑制**：自定义激活时 shell 偏好就是 dark，深色方块会渲染成选中；
+    `refreshAppearanceCube()` 此时摘掉它的选中 class（差集已知），退出时加回。React
+    下次重渲染会自然对齐。
+  - 对话框「背景」区也有同一个开关（作为方块注入失败时的备用入口 + 说明文案）。
 - **自定义外观（背景 + 主题合一）**：General 设置的外观区只有一个「自定义外观」行
   （slot id `appearance-custom`，order 11），点击进入同一个 Modal，内含三个可折叠区
   （展开状态由 React state 管理，重渲染不会把折叠区弹开）：「背景」管理图片 URL/本地图/
@@ -201,3 +264,14 @@ while (el && el !== document.documentElement) {
     loading，一次性 setTimeout 会错过）。另：`--headless=new` 在本机沙箱里起不来，Chrome
     自测用 `--headless=old --no-sandbox --disable-crashpad --user-data-dir=/tmp/...`，
     且 macOS 没有 `timeout` 命令。
+11. **register 独立主题被 adopt() 周期踩回（v0.2.0 的核心坑）**：症状是「主题会变」——
+    每 ~19s 浅色一闪（代码块/输入框先变白），重启后偶发卡白。信标（把启动事件环
+    scope.set 进 themeFont 字段、从 patch 文件回读；YAML 回环会截断 `{`、`"` 和
+    续行折叠，payload 只能用 k=v+圆括号编码）抓到 `theme/change pref=system` 每 19s 一次。
+    根因：ui-theme 的 `adopt()` 在每次设置同步都把偏好重置为 Host 持久化值；自定义主题 id
+    不在其 schema（仅 light/dark/system），`setTheme(自定义id)` 只能会话内存活，必被踩掉。
+    修复（定型方案）：自定义模式 = **持久化内置 "dark" 偏好**（合法值，adopt() 恒 no-op）
+    + **scheme 锁定 overrideTokens 图层**（light/dark 两端同 dark 值）+ 1s 看门狗兜底
+    （scope 未 ready 时 poke store；偏好偏离基底且无壳层方块点击时断言回 "dark"）。
+    主动离开在捕获期 click 监听里**立即** setCustomActive(false)，不再依赖 theme/change
+    （重点已选中的深色方块不 publish，pending 标志会漏）。

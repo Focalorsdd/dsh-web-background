@@ -112,7 +112,12 @@ const fakeDocument = {
 	},
 };
 
-const fakeWindow = { localStorage: undefined };
+const localStoreMap = new Map();
+const fakeWindow = { localStorage: {
+	getItem: (key) => (localStoreMap.has(key) ? localStoreMap.get(key) : null),
+	setItem: (key, value) => { localStoreMap.set(key, String(value)); },
+	removeItem: (key) => { localStoreMap.delete(key); },
+} };
 const fakeModuleLoader = { load(handoff) {
 	fakeModuleLoader.handoff = handoff;
 } };
@@ -162,7 +167,27 @@ const defaultCustom = () => ({
 let hostValue = null; // includes themeCustom once "ready"
 let hostUser = null;
 let hostStatus = "loading";
+// When true, the fake Host schema predates customActive (a plugin update
+// before the host restart): writes to the field are rejected and it never
+// appears in the mirrored value — the plugin must carry it via the local
+// mirror until the restart.
+let hostSchemaOmitsCustomActive = false;
 const scopeListeners = [];
+function buildHostValue() {
+	const value = {
+		image: (hostUser && hostUser.image) ?? "",
+		overlay: (hostUser && hostUser.overlay) ?? 0.55,
+		enabled: (hostUser && hostUser.enabled) !== false,
+		themeEnabled: (hostUser && hostUser.themeEnabled) !== false,
+		themePalette: hostUser && Array.isArray(hostUser.themePalette) ? hostUser.themePalette : [],
+		themeFont: (hostUser && hostUser.themeFont) ?? "",
+		themeCustom: hostUser && hostUser.themeCustom ? hostUser.themeCustom : defaultCustom(),
+		dialogWidth: (hostUser && hostUser.dialogWidth) ?? 0,
+		dialogHeight: (hostUser && hostUser.dialogHeight) ?? 0,
+	};
+	if (!hostSchemaOmitsCustomActive) value.customActive = (hostUser && hostUser.customActive) === true;
+	return value;
+}
 const fakeScope = {
 	getSnapshot() {
 		return {
@@ -179,36 +204,19 @@ const fakeScope = {
 		return () => {};
 	},
 	set(field, value) {
+		if (hostSchemaOmitsCustomActive && field === "customActive") {
+			return Promise.reject(new Error("unknown field: " + field));
+		}
 		hostUser = hostUser ?? {};
 		hostUser[field] = value;
-		hostValue = {
-			image: hostUser.image ?? "",
-			overlay: hostUser.overlay ?? 0.55,
-			enabled: hostUser.enabled !== false,
-			themeEnabled: hostUser.themeEnabled !== false,
-			themePalette: Array.isArray(hostUser.themePalette) ? hostUser.themePalette : [],
-			themeFont: hostUser.themeFont ?? "",
-			themeCustom: hostUser.themeCustom ?? defaultCustom(),
-			dialogWidth: hostUser.dialogWidth ?? 0,
-			dialogHeight: hostUser.dialogHeight ?? 0,
-		};
+		hostValue = buildHostValue();
 		hostStatus = "ready";
 		for (const fn of scopeListeners) fn();
 		return Promise.resolve();
 	},
 	unset(field) {
 		if (hostUser) delete hostUser[field];
-		hostValue = {
-			image: (hostUser && hostUser.image) ?? "",
-			overlay: (hostUser && hostUser.overlay) ?? 0.55,
-			enabled: (hostUser && hostUser.enabled) !== false,
-			themeEnabled: (hostUser && hostUser.themeEnabled) !== false,
-			themePalette: hostUser && Array.isArray(hostUser.themePalette) ? hostUser.themePalette : [],
-			themeFont: (hostUser && hostUser.themeFont) ?? "",
-			themeCustom: hostUser && hostUser.themeCustom ? hostUser.themeCustom : defaultCustom(),
-			dialogWidth: (hostUser && hostUser.dialogWidth) ?? 0,
-			dialogHeight: (hostUser && hostUser.dialogHeight) ?? 0,
-		};
+		hostValue = buildHostValue();
 		for (const fn of scopeListeners) fn();
 		return Promise.resolve();
 	},
@@ -216,7 +224,20 @@ const fakeScope = {
 
 // ── Fake cordis ctx ─────────────────────────────────────────────────────
 const registered = [];
+// Legacy overrideTokens layers (must stay unused in custom mode).
 const themeLayers = [];
+// Active registered theme definitions ({def}), mirroring the shell registry.
+const themeRegistrations = [];
+let themePreference = "system";
+const themeListeners = [];
+function publishTheme() {
+	const snapshot = {
+		preference: themePreference,
+		active: { colorScheme: themePreference === "light" ? "light" : "dark", tokens: {} },
+		revision: 1,
+	};
+	for (const fn of themeListeners.slice()) fn(snapshot);
+}
 const fakeTheme = {
 	overrideTokens(source, tokens) {
 		if (source !== "auto-theme") throw new Error("wrong theme override source: " + source);
@@ -233,12 +254,69 @@ const fakeTheme = {
 			if (index >= 0) themeLayers.splice(index, 1);
 		};
 	},
+	// Mirrors ui-theme's registry: registered themes carry scheme-resolved
+	// flat token values; disposing the active theme resets the preference.
+	register(definition) {
+		if (!definition || definition.id !== "dsh-web-background") {
+			throw new Error("wrong custom theme id: " + (definition && definition.id));
+		}
+		if (definition.colorScheme !== "dark") {
+			throw new Error("custom theme must be dark-scheme: " + definition.colorScheme);
+		}
+		if (!definition.tokens || typeof definition.tokens !== "object") {
+			throw new Error("registered theme tokens missing");
+		}
+		for (const [name, value] of Object.entries(definition.tokens)) {
+			if (!name.startsWith("--dsw-")) throw new Error("unexpected theme token: " + name);
+			if (typeof value !== "string") {
+				throw new Error("registered theme token must be a flat string: " + name);
+			}
+		}
+		if (themeRegistrations.some((record) => record.def.id === definition.id)) {
+			throw new Error("duplicate theme id: " + definition.id);
+		}
+		const record = { def: definition };
+		themeRegistrations.push(record);
+		return () => {
+			const index = themeRegistrations.indexOf(record);
+			if (index >= 0) themeRegistrations.splice(index, 1);
+			if (themePreference === definition.id) {
+				themePreference = "system";
+				publishTheme();
+			}
+		};
+	},
+	setTheme(id) {
+		if (
+			id !== "system" &&
+			id !== "light" &&
+			id !== "dark" &&
+			!themeRegistrations.some((record) => record.def.id === id)
+		) {
+			throw new Error(`theme "${id}" is not registered`);
+		}
+		if (themePreference === id) return;
+		themePreference = id;
+		publishTheme();
+	},
 	getTheme() {
-		return { preference: "system", active: { colorScheme: "dark", tokens: {} }, revision: 1 };
+		return {
+			preference: themePreference,
+			active: { colorScheme: themePreference === "light" ? "light" : "dark", tokens: {} },
+			revision: 1,
+		};
 	},
 };
 const fakeCtx = {
 	theme: fakeTheme,
+	on(event, fn) {
+		if (event !== "theme/change") throw new Error("unexpected event subscription: " + event);
+		themeListeners.push(fn);
+		return () => {
+			const index = themeListeners.indexOf(fn);
+			if (index >= 0) themeListeners.splice(index, 1);
+		};
+	},
 	// DSH ≥ 0.1.7 settings service: configForms.get(entryId) returns a form with
 	// the same getSnapshot/subscribe/set/unset shape as the retired settingsScope.
 	configForms: { get(entryId) {
@@ -286,10 +364,12 @@ if (opts.id !== "appearance-custom") throw new Error("combined row id should be 
 if (opts.order !== 11) throw new Error("wrong combined appearance row order: " + opts.order);
 const injected = opts.inject();
 if (!injected.store) throw new Error("inject face missing store");
+if (injected.customMode !== true) throw new Error("inject face should flag custom theme mode support");
 
 const store = injected.store;
 let snap = store.getSnapshot();
 if (snap.overlay !== 0.55 || snap.enabled !== true) throw new Error("default state wrong");
+if (snap.customActive !== false) throw new Error("custom appearance must default to off");
 if (snap.dialogWidth !== 0 || snap.dialogHeight !== 0) {
 	throw new Error("default dialog size should be 0/0 (natural modal size)");
 }
@@ -299,7 +379,11 @@ if (snap.themeEnabled !== true || snap.themePalette.length !== 0 || snap.themeFo
 if (!snap.themeCustom || snap.themeCustom.sidebar.alpha !== 0.52) {
 	throw new Error("default themeCustom state wrong: " + JSON.stringify(snap.themeCustom));
 }
-if (themeLayers.length !== 0) throw new Error("theme layer should stay absent for the default state");
+if (themeLayers.length !== 0) throw new Error("legacy theme layer should stay absent while custom mode is off");
+if (themeRegistrations.length !== 0) {
+	throw new Error("custom mode must never register a theme (adopt() would stomp it)");
+}
+if (themePreference !== "system") throw new Error("shell preference must stay untouched by default");
 
 // offline auto-theme algorithm probes (no browser canvas needed)
 // 16x16 fake image: gray-green border occupies 75% of the pixels, coral
@@ -340,10 +424,26 @@ if (!String(store.getSnapshot().image).length) {
 	// image empty means default — fine
 }
 
-// default paint
+// custom mode off: the background tag exists but stays empty (stock look)
 const bgTag = created.find((el) => el.dataset.pluginCss === "dsh-web-background/inject");
-if (!bgTag || !bgTag.textContent.includes("data:image/jpeg;base64")) {
-	throw new Error("background tag not painted with default photo");
+if (!bgTag) throw new Error("background style tag missing");
+if (bgTag.textContent !== "") {
+	throw new Error("background must stay stock while the custom appearance is off");
+}
+
+// entering the "自定义" appearance persists the custom base preference
+// ("dark" — a legal schema value, so ui-theme's adopt() never fights it)
+// and paints the background; with no palette yet the mode is "plain"
+// (stock dark surfaces — background only, no token layer).
+store.setCustomActive(true);
+snap = store.getSnapshot();
+if (snap.customActive !== true) throw new Error("setCustomActive failed");
+if (themeLayers.length !== 0) throw new Error("custom mode without a palette should stack no token layer");
+if (themePreference !== plugin.__test.CUSTOM_BASE_PREFERENCE) {
+	throw new Error("shell preference did not switch to the custom base: " + themePreference);
+}
+if (!bgTag.textContent.includes("data:image/jpeg;base64")) {
+	throw new Error("background tag not painted with default photo in custom mode");
 }
 
 // render the single combined row closed (background + theme editors live
@@ -421,16 +521,22 @@ store.setEnabled(false);
 if (!(bgTag.textContent === "")) throw new Error("disable should clear the style tag");
 store.setEnabled(true);
 
-// auto-theme layer lifecycle
+// auto-theme registration lifecycle (custom mode: flat scheme-resolved tokens)
 store.setThemeProfile(["#ff5533", "#1b2a41", "#f4efe6"], "tech");
 snap = store.getSnapshot();
 if (snap.themePalette.length !== 3 || snap.themeFont !== "tech") throw new Error("setThemeProfile failed");
-if (themeLayers.length !== 1) throw new Error("theme override layer was not applied");
+if (themeLayers.length !== 1) throw new Error("custom mode should stack exactly one overrideTokens layer");
 const tokens = themeLayers[0];
 for (const name of ["--dsw-alias-bg-base", "--dsw-alias-brand-primary", "--dsw-alias-label-primary", "--dsw-specific-sidebar-fill", "--dsw-font-family", "--dsw-font-base-16"]) {
 	if (!tokens[name]) throw new Error("theme tokens missing: " + name);
+	if (tokens[name].light !== tokens[name].dark) {
+		throw new Error("custom layer tokens must be scheme-locked to the dark value: " + name);
+	}
 }
-if (!tokens["--dsw-font-family"].light.includes("PingFang SC")) throw new Error("font stack lost CJK fallback");
+if (!tokens["--dsw-font-family"].dark.includes("PingFang SC")) throw new Error("font stack lost CJK fallback");
+if (themePreference !== plugin.__test.CUSTOM_BASE_PREFERENCE) {
+	throw new Error("rebuilding the layer must keep the custom base preference");
+}
 
 // With a palette present, re-render the row WITH THE MODAL OPEN: every
 // surface row must show a resolved auto-color swatch and the picker must
@@ -488,15 +594,13 @@ if ((editedHtml.match(/dwb-autoBadge/g) || []).length !== 10) {
 }
 React.useState = realUseState;
 store.setThemeSurface("sidebar", { color: "", alpha: 0.52 });
-// User-authored surface overrides: exact color + exact alpha, both modes.
+// User-authored surface overrides: exact color + exact alpha, applied to
+// the layer's scheme-locked token pairs.
 store.setThemeSurface("sidebar", { color: "#123456", alpha: 0.4 });
 if (themeLayers.length !== 1) throw new Error("surface override should rebuild the layer");
 const customTokens = themeLayers[0];
 if (customTokens["--dsw-specific-sidebar-fill"].dark !== "rgba(18, 52, 86, 0.4)") {
 	throw new Error("custom sidebar color not applied verbatim: " + customTokens["--dsw-specific-sidebar-fill"].dark);
-}
-if (customTokens["--dsw-specific-sidebar-fill"].light !== "rgba(18, 52, 86, 0.4)") {
-	throw new Error("custom sidebar color must apply to both modes");
 }
 store.setThemeSurface("sidebar", { color: "", alpha: 0.52 });
 if (themeLayers.length !== 1) throw new Error("reset-to-auto surface should rebuild the layer");
@@ -510,9 +614,6 @@ store.setThemeSurface("sidebar", { alpha: 0.26 });
 const alphaTokens = themeLayers[0];
 if (alphaTokens["--dsw-specific-sidebar-fill"].dark !== "hsla(10.0, 38.0%, 40.0%, 0.26)") {
 	throw new Error("alpha-only override did not rescale the sidebar tint: " + alphaTokens["--dsw-specific-sidebar-fill"].dark);
-}
-if (!alphaTokens["--dsw-specific-sidebar-fill"].light.includes(", 0.26)")) {
-	throw new Error("alpha-only override should also apply to the light scheme: " + alphaTokens["--dsw-specific-sidebar-fill"].light);
 }
 store.setThemeSurface("sidebarActive", { alpha: 0.3 });
 const scaledTokens = themeLayers[0];
@@ -535,14 +636,103 @@ snap = store.getSnapshot();
 if (snap.themeCustom.sidebar.color !== "" || snap.themeCustom.sidebar.alpha !== 0.52) {
 	throw new Error("clearThemeCustom failed");
 }
+// Disabling the auto theme keeps the custom appearance active with stock
+// dark surfaces ("plain" mode — no token layer).
 store.setThemeEnabled(false);
-if (themeLayers.length !== 0) throw new Error("disabling theme should release the override layer");
+if (themeLayers.length !== 0) throw new Error("disabling the auto theme should lift the token layer");
+if (themePreference !== plugin.__test.CUSTOM_BASE_PREFERENCE) {
+	throw new Error("custom base preference should stay with the auto theme off");
+}
 store.setThemeEnabled(true);
-if (themeLayers.length !== 1) throw new Error("re-enabling theme should restore the override layer");
+if (themeLayers.length !== 1 || Object.keys(themeLayers[0]).length < 40) {
+	throw new Error("re-enabling theme should restore the token layer");
+}
 store.clearTheme();
 snap = store.getSnapshot();
 if (snap.themePalette.length !== 0 || snap.themeFont !== "") throw new Error("clearTheme failed");
-if (themeLayers.length !== 0) throw new Error("clearTheme should release the override layer");
+if (themeLayers.length !== 0) {
+	throw new Error("clearTheme should lift the token layer");
+}
+
+// Boot-time shell adoption (no cube click) must be re-asserted over: the
+// custom base preference is restored.
+fakeTheme.setTheme("light");
+if (themePreference !== plugin.__test.CUSTOM_BASE_PREFERENCE) {
+	throw new Error("custom base should re-assert over a non-interactive preference change");
+}
+if (!bgTag.textContent.length) throw new Error("re-asserting custom mode should repaint the background");
+
+// Leaving custom mode lifts the layer and unpaints the background; a bare
+// store toggle leaves the shell preference untouched (the real leave paths
+// — built-in cube click / custom cube / dialog switch — set it themselves).
+store.setCustomActive(false);
+if (themeLayers.length !== 0) throw new Error("leaving custom mode should lift the token layer");
+if (themePreference !== plugin.__test.CUSTOM_BASE_PREFERENCE) {
+	throw new Error("a bare store toggle should not move the shell preference");
+}
+if (bgTag.textContent !== "") throw new Error("leaving custom mode should restore the stock background");
+store.setCustomActive(true);
+if (themePreference !== plugin.__test.CUSTOM_BASE_PREFERENCE) throw new Error("re-entering custom mode failed");
+if (themeLayers.length !== 0) throw new Error("re-entering with no palette should stack no layer (clearTheme ran)");
+if (!bgTag.textContent.length) throw new Error("re-entering custom mode should repaint");
+
+// Schema-gap + restart lifecycle. customActive was set while the Host schema
+// predated it: the write was rejected, only the local mirror carries it.
+await new Promise((resolve) => setTimeout(resolve, 400)); // debounced persist → local mirror
+{
+	const mirror = JSON.parse(localStoreMap.get("dsh-web-background:v1") || "{}");
+	if (mirror.customActive !== true) throw new Error("local mirror did not persist customActive");
+
+	// Pre-restart host-ready echo: the Host has user values for the old
+	// fields, but its schema rejects customActive (user record lacks it).
+	hostSchemaOmitsCustomActive = true;
+	hostStatus = "ready";
+	const before = store.getSnapshot();
+	hostUser = {
+		image: before.image,
+		overlay: before.overlay,
+		enabled: before.enabled,
+		themeEnabled: before.themeEnabled,
+		themePalette: before.themePalette,
+		themeFont: before.themeFont,
+		themeCustom: before.themeCustom,
+		dialogWidth: before.dialogWidth,
+		dialogHeight: before.dialogHeight,
+	};
+	hostValue = buildHostValue();
+	for (const fn of scopeListeners) fn(); // settings echo under the old schema
+	snap = store.getSnapshot();
+	if (snap.customActive !== true) {
+		throw new Error("a host echo under the old schema knocked customActive off");
+	}
+	if (themePreference !== plugin.__test.CUSTOM_BASE_PREFERENCE) {
+		throw new Error("custom base did not survive a host echo under the old schema");
+	}
+	if (!bgTag.textContent.length) throw new Error("background dropped after a host echo");
+	if (hostUser.customActive !== undefined) {
+		throw new Error("the old schema must not store customActive");
+	}
+	await new Promise((resolve) => setTimeout(resolve, 0)); // let the rejected forward-migration unmark
+
+	// Restart: the schema now projects the field (schema default false), but
+	// the Host user record still has no value for it. The first host-ready
+	// echo must NOT clobber the local value (the "dark → white on boot" bug),
+	// and forward-migration must write it into the Host for good.
+	hostSchemaOmitsCustomActive = false;
+	hostValue = buildHostValue(); // value.customActive === false now
+	for (const fn of scopeListeners) fn(); // first echo after the restart
+	snap = store.getSnapshot();
+	if (snap.customActive !== true) {
+		throw new Error("the post-restart echo knocked customActive off");
+	}
+	if (hostUser.customActive !== true) {
+		throw new Error("customActive was not forward-migrated into the host");
+	}
+	if (themePreference !== plugin.__test.CUSTOM_BASE_PREFERENCE) {
+		throw new Error("custom base lost across the restart echo");
+	}
+	if (!bgTag.textContent.length) throw new Error("background dropped after the restart echo");
+}
 
 store.reset();
 snap = store.getSnapshot();
@@ -550,6 +740,7 @@ if (
 	snap.image !== "" ||
 	snap.overlay !== 0.55 ||
 	snap.enabled !== true ||
+	snap.customActive !== false ||
 	snap.themeEnabled !== true ||
 	snap.themePalette.length !== 0 ||
 	snap.themeFont !== "" ||
@@ -558,6 +749,10 @@ if (
 ) {
 	throw new Error("reset failed: " + JSON.stringify(snap));
 }
+if (themeRegistrations.length !== 0 || bgTag.textContent !== "") {
+	throw new Error("reset should leave the custom appearance");
+}
+if (themeLayers.length !== 0) throw new Error("legacy overrideTokens must never fire in custom mode");
 
 // dialog resize: size persists through the store; reset restores natural size
 store.setDialogSize(640, 480);
@@ -583,7 +778,7 @@ if (!nodeHalf.Config || typeof nodeHalf.Config.toJSON !== "function") {
 	throw new Error("node half must export a schemastery Config");
 }
 const configDict = nodeHalf.Config.dict ?? {};
-const EXPECTED_FIELDS = ["image", "overlay", "enabled", "themeEnabled", "themePalette", "themeFont", "themeCustom", "dialogWidth", "dialogHeight"];
+const EXPECTED_FIELDS = ["image", "overlay", "enabled", "customActive", "themeEnabled", "themePalette", "themeFont", "themeCustom", "dialogWidth", "dialogHeight"];
 for (const field of EXPECTED_FIELDS) {
 	const schema = configDict[field];
 	if (!schema) throw new Error("Config missing field: " + field);

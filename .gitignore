@@ -4,3 +4,4 @@ node_modules/
 *.zip
 dsh-routing-suite/
 dsh-super-injector-0.3.3/
+.pnpm-store/
