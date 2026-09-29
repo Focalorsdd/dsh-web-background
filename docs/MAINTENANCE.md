@@ -119,8 +119,8 @@ node scripts/smoke-test.mjs   # 离线冒烟测试（无需浏览器）
 - **「自定义」外观模式（v0.2.0）**：外观行（ui-theme 的 AppearanceRow，三个硬编码
   方块 浅色/深色/跟随系统，选中态跟随 `preference`）被 DOM 注入第四个方块「自定义」。
   实现要点（client.template.js「custom appearance cube」区块）：
-  - 行定位：哈希类名探针 `APPEARANCE_CUBE_PROBES = ["TDnZ3a"]`（0.1.7-rc 构建；
-    选择器形如 `[class*='TDnZ3a_cubeRow']`）+ 结构化兜底（恰好 3 个 aria-pressed
+  - 行定位：哈希类名探针 `APPEARANCE_CUBE_PROBES = ["kIe1nG", "TDnZ3a"]`（0.2.0-rc.1 /
+    0.1.7-rc 构建；选择器形如 `[class*='kIe1nG_cubeRow']`）+ 结构化兜底（恰好 3 个 aria-pressed
     按钮的容器）。都找不到且页面上存在 aria-pressed 按钮组时 warn 一次（设置页未
     打开时不报）。
   - 方块样式在运行时从 shell 自己的方块抄：base class 抄未选中方块；选中态 class 是
@@ -175,21 +175,22 @@ node scripts/smoke-test.mjs   # 离线冒烟测试（无需浏览器）
 应用自身有不透明全屏层会盖住 body 背景，当前在 `lib/client.template.js` 的 `buildCss()` 里已置透明。
 选择器按前端构建「代」并排保留：不再匹配的那一代只是空转 CSS，不影响另一代，因此一次 App 升级不会立刻打断另一侧。
 
-| 层 | ≤0.1.6 构建 | 0.1.7-rc 构建 | 处理 |
-|---|---|---|---|
-| 应用框架 | `.pI_x6G_frame` | `.P9Gu9a_frame` | transparent |
-| 中央内容列 | —（旧版无此层） | `.P9Gu9a_centerCol` | transparent |
-| 右侧面板列 | —（旧版无此层） | `.P9Gu9a_rightbarCol` | transparent |
-| 会话区 | `.wSkVaW_root` | `._5AcOhq_root` | transparent |
-| 侧栏栏位 | `.pI_x6G_sidebarCol` | `.P9Gu9a_sidebarCol` | transparent |
-| 侧栏 | `.hHd-Xa_root` | `.pjj1TG_root` | `rgba(10,14,28,0.6)` 深色遮罩保可读性 |
+| 层 | ≤0.1.6 构建 | 0.1.7-rc 构建 | 0.2.0-rc.1 构建 | 处理 |
+|---|---|---|---|---|
+| 应用框架 | `.pI_x6G_frame` | `.P9Gu9a_frame` | `.trXoda_frame` | transparent |
+| 中央内容列 | —（旧版无此层） | `.P9Gu9a_centerCol` | `.trXoda_centerCol` | transparent |
+| 右侧面板列 | —（旧版无此层） | `.P9Gu9a_rightbarCol` | `.trXoda_rightbarCol` | transparent |
+| 会话区 | `.wSkVaW_root` | `._5AcOhq_root` | `.wQcD8W_root` | transparent |
+| 侧栏栏位 | `.pI_x6G_sidebarCol` | `.P9Gu9a_sidebarCol` | `.trXoda_sidebarCol` | transparent |
+| 侧栏 | `.hHd-Xa_root` | `.pjj1TG_root` | `.yuWXda_root` | `var(--dsw-specific-sidebar-fill, rgba(10,14,28,0.6))` 遮罩保可读性 |
 
 各代的来源插件：ui-layout 提供 `_frame` / `_centerCol` / `_rightbarCol` / `_sidebarCol`，
 ui-conversation 提供那个持 `--dsw-alias-bg-base` 的 `_root`，ui-sidebar 提供侧栏 `_root`。
 ⚠️ 0.1.7 起 ui-layout 把 `bg-base` 拆到了**三个**元素上（frame + centerCol + rightbarCol，
 后两个带桌面窗口圆角样式）——只透 frame 不够，主区域会被 centerCol 盖住（踩过，见时间线 9）。
 核对方法：对 asar 里 `dsh-client-ui-layout/lib/client.js` 搜 `background:var(--dsw-alias-bg-base)`，
-每个命中的类都要进透明列表。
+每个命中的类都要进透明列表。外观行 cubeRow 探针同理：0.2.0-rc.1 = `kIe1nG`，0.1.7-rc = `TDnZ3a`
+（搜 `dsh-client-ui-theme/lib/client.js` 里的 `_cubeRow`）。
 
 **这些类名是 dsh-web-frontend 构建时生成的哈希名，dsh 升级后会变。** 升级后若背景消失，重新探测类名：
 

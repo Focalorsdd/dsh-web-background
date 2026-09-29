@@ -1,6 +1,6 @@
 {
   "name": "dsh-web-background",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DeepSeek Harness Web GUI custom background: injects a background image/via client CSS so text stays readable.",
   "type": "module",
   "main": "lib/index.js",
