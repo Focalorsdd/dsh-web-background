@@ -173,24 +173,33 @@ node scripts/smoke-test.mjs   # 离线冒烟测试（无需浏览器）
 ## 遮挡层（dsh 升级后背景消失的排查点）
 
 应用自身有不透明全屏层会盖住 body 背景，当前在 `lib/client.template.js` 的 `buildCss()` 里已置透明。
-选择器按前端构建「代」并排保留：不再匹配的那一代只是空转 CSS，不影响另一代，因此一次 App 升级不会立刻打断另一侧。
+**双保险**（v0.2.2 起）：
 
-| 层 | ≤0.1.6 构建 | 0.1.7-rc 构建 | 0.2.0-rc.1 构建 | 处理 |
-|---|---|---|---|---|
-| 应用框架 | `.pI_x6G_frame` | `.P9Gu9a_frame` | `.trXoda_frame` | transparent |
-| 中央内容列 | —（旧版无此层） | `.P9Gu9a_centerCol` | `.trXoda_centerCol` | transparent |
-| 右侧面板列 | —（旧版无此层） | `.P9Gu9a_rightbarCol` | `.trXoda_rightbarCol` | transparent |
-| 会话区 | `.wSkVaW_root` | `._5AcOhq_root` | `.wQcD8W_root` | transparent |
-| 侧栏栏位 | `.pI_x6G_sidebarCol` | `.P9Gu9a_sidebarCol` | `.trXoda_sidebarCol` | transparent |
-| 侧栏 | `.hHd-Xa_root` | `.pjj1TG_root` | `.yuWXda_root` | `var(--dsw-specific-sidebar-fill, rgba(10,14,28,0.6))` 遮罩保可读性 |
+1. **硬编码代际表**：选择器按前端构建「代」并排保留——不再匹配的那一代只是空转 CSS，
+   不影响另一代，因此一次 App 升级不会立刻打断另一侧。
+2. **运行时自动发现**（`discoverOccluderClasses()`）：扫描页面 live 样式表，凡是「单类
+   css-module 选择器 + background 是 `--dsw-alias-bg-base`（结构层）或
+   `--dsw-specific-sidebar-fill`（侧栏根）」的规则一律收入透明/侧栏列表。哈希前缀在每次
+   dsh 前端构建都会变（任何小改动都会重哈希模块），自动发现让插件**跨升级自愈**。
+   发现结果签名并入 paintBackground 的缓存 key；看门狗每 5s 重扫一次（shell HMR 换包时
+   无需重启）。内容面（`_editor`/`_file`/`_thumb` 等）刻意不匹配——它们保留主题化的不透明盒子。
+
+| 层 | ≤0.1.6 构建 | 0.1.7-rc 构建 | 0.2.0-rc.1 构建 | 0.2.0-rc.2 构建 | 处理 |
+|---|---|---|---|---|---|
+| 应用框架 | `.pI_x6G_frame` | `.P9Gu9a_frame` | `.trXoda_frame` | `._6Qf49G_frame` | transparent |
+| 中央内容列 | —（旧版无此层） | `.P9Gu9a_centerCol` | `.trXoda_centerCol` | `._6Qf49G_centerCol` | transparent |
+| 右侧面板列 | —（旧版无此层） | `.P9Gu9a_rightbarCol` | `.trXoda_rightbarCol` | `._6Qf49G_rightbarCol` | transparent |
+| 会话区 | `.wSkVaW_root` | `._5AcOhq_root` | `.wQcD8W_root` | `.ST7X_W_root` | transparent |
+| 侧栏栏位 | `.pI_x6G_sidebarCol` | `.P9Gu9a_sidebarCol` | `.trXoda_sidebarCol` | `._6Qf49G_sidebarCol` | transparent |
+| 侧栏 | `.hHd-Xa_root` | `.pjj1TG_root` | `.yuWXda_root` | `._3WPZCG_root` | `var(--dsw-specific-sidebar-fill, rgba(10,14,28,0.6))` 遮罩保可读性 |
 
 各代的来源插件：ui-layout 提供 `_frame` / `_centerCol` / `_rightbarCol` / `_sidebarCol`，
 ui-conversation 提供那个持 `--dsw-alias-bg-base` 的 `_root`，ui-sidebar 提供侧栏 `_root`。
 ⚠️ 0.1.7 起 ui-layout 把 `bg-base` 拆到了**三个**元素上（frame + centerCol + rightbarCol，
 后两个带桌面窗口圆角样式）——只透 frame 不够，主区域会被 centerCol 盖住（踩过，见时间线 9）。
 核对方法：对 asar 里 `dsh-client-ui-layout/lib/client.js` 搜 `background:var(--dsw-alias-bg-base)`，
-每个命中的类都要进透明列表。外观行 cubeRow 探针同理：0.2.0-rc.1 = `kIe1nG`，0.1.7-rc = `TDnZ3a`
-（搜 `dsh-client-ui-theme/lib/client.js` 里的 `_cubeRow`）。
+每个命中的类都要进透明列表。外观行 cubeRow 探针同理：0.2.0-rc.2 = `-I09Na`，
+0.2.0-rc.1 = `kIe1nG`，0.1.7-rc = `TDnZ3a`（搜 `dsh-client-ui-theme/lib/client.js` 里的 `_cubeRow`）。
 
 **这些类名是 dsh-web-frontend 构建时生成的哈希名，dsh 升级后会变。** 升级后若背景消失，重新探测类名：
 
